@@ -123,6 +123,28 @@ def strip_border(hwnd):
         dwm.DwmSetWindowAttribute(wintypes.HWND(hwnd), wintypes.DWORD(34), ctypes.byref(wintypes.DWORD(0)), ctypes.sizeof(wintypes.DWORD))
     except: pass
 
+def get_active_window():
+    try:
+        import psutil
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd: return "", ""
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0 or length > 256: return "", ""
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = buf.value or ""
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value <= 0: return "", title
+        try:
+            exe = psutil.Process(pid.value).name().lower()
+        except:
+            exe = ""
+        return exe, title
+    except:
+        return "", ""
+
 class LLM:
     def __init__(self):
         self.url = "http://localhost:11434/api/chat"
@@ -292,6 +314,7 @@ class Pet(QWidget):
         self._session_start = time.time(); self._last_eye = time.time(); self._burnout_warned = False; self._sleep_warned = False
         self._mood_warned = 0
         self._last_water = time.time(); self._last_posture = time.time()
+        self._multitask_count = 0; self._last_multitask_warn = 0
         d = get_dragon(); self._stage = d["stage"]
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -335,6 +358,7 @@ class Pet(QWidget):
             self.dragon.hover_alpha = max(0, self.dragon.hover_alpha - 0.02)
         self.update()
         self._rt = QTimer(self); self._rt.timeout.connect(self._check_reminders); self._rt.start(60000)
+        self._tt = QTimer(self); self._tt.timeout.connect(self._track_window); self._tt.start(5000)
         update_streak("daily_login", True)
         self._check_reminders()
         self._evening_review_setup()
@@ -402,6 +426,42 @@ class Pet(QWidget):
         if d["mood"] < 0.2 and now_ts - self._mood_warned > 600:
             self._mood_warned = now_ts
             self.dragon.speak("Em thấy hơi buồn... anh nói chuyện với em đi!")
+
+    def _track_window(self):
+        exe, title = get_active_window()
+        if not exe: return
+        now = time.time()
+        if self._last_app and exe != self._last_app:
+            if now - self._last_switch < 30:
+                self._multitask_count += 1
+                if self._multitask_count >= 5 and now - self._last_multitask_warn > 300:
+                    self._last_multitask_warn = now
+                    self.dragon.add_fire(5)
+                    self.dragon.speak("Anh đang nhảy qua lại giữa các app quá nhanh! Tập trung 1 việc thôi!")
+            else:
+                self._multitask_count = 0
+            self._last_switch = now
+        if now - getattr(self, '_drift_checked', 0) > 600 and title and title != getattr(self, '_last_title', ''):
+            self._drift_checked = now
+            goals = db.execute("SELECT * FROM goals WHERE date=? AND done=0", (date.today().isoformat(),)).fetchall()
+            if goals and len(goals) > 0:
+                goal_texts = "; ".join([g["text"] for g in goals[:3]])
+                d = get_dragon()
+                prompt = f"User goals: {goal_texts}. Current window title: '{title}'. Does this window seem related to any goal? Reply ONLY YES or NO."
+                self.llm.ask("Reply only YES or NO.", prompt,
+                    lambda r: self.dragon.speak(f"Anh bảo '{goal_texts[:40]}...' nhưng đang '{title[:30]}'! Quay lại focus đi!") if r and "NO" in r.upper() and "YES" not in r.upper() else None)
+        self._last_app = exe; self._last_title = title
+        # Morning ritual
+        h = datetime.now().hour
+        work_apps = ["code", "devenv", "pycharm", "idea", "notepad++", "terminal", "cmd", "powershell", "slack", "teams", "chrome", "msedge", "firefox"]
+        if not getattr(self, '_morning_done', False) and h < 12 and not self.dragon.sleeping:
+            if any(w in exe.lower() for w in work_apps):
+                goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
+                if not goals:
+                    self.dragon.speak("Chào buổi sáng! Anh định làm gì hôm nay? /goal <mục tiêu> nha!")
+                else:
+                    self.dragon.speak(f"Chào buổi sáng! Hôm nay có {len(goals)} mục tiêu, cùng chiến thôi!")
+                self._morning_done = True
 
     def _toggle_pomo(self):
         if self._pomo_active:
