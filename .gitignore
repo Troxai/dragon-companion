@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+data/
+*.db
+*.log
+*.txt
+!requirements.txt
+build/
+dist/
+*.spec
+__MACOSX/
+*.zip
+*.exe
+*.bat
+!Setup.bat

@@ -1,0 +1,475 @@
+import sys, math, random, ctypes, sqlite3, os, json, threading, urllib.request, time
+from ctypes import wintypes
+from datetime import datetime, date
+from PyQt6.QtWidgets import QApplication, QWidget, QLineEdit, QSystemTrayIcon, QMenu
+from PyQt6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPixmap, QIcon, QCursor
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGE_DIR = os.path.join(SCRIPT_DIR, "image")
+APP_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~/.config")), "DragonCompanion")
+os.makedirs(APP_DIR, exist_ok=True)
+DB_PATH = os.path.join(APP_DIR, "dragon.db")
+
+app = QApplication(sys.argv)
+app.setQuitOnLastWindowClosed(False)
+
+db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db.row_factory = sqlite3.Row
+db.executescript("""
+    CREATE TABLE IF NOT EXISTS dragon(id INTEGER PRIMARY KEY, stage TEXT DEFAULT 'egg', xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, mood REAL DEFAULT 0.6, hp REAL DEFAULT 1.0, element TEXT DEFAULT 'fire');
+    CREATE TABLE IF NOT EXISTS goals(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, text TEXT, done INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS streaks(type TEXT PRIMARY KEY, count INTEGER DEFAULT 0, best INTEGER DEFAULT 0, last_date TEXT);
+    CREATE TABLE IF NOT EXISTS achievements(id TEXT PRIMARY KEY, name TEXT, desc TEXT, unlocked_at TEXT);
+    CREATE TABLE IF NOT EXISTS daily_stats(date TEXT PRIMARY KEY, focus_min INTEGER DEFAULT 0, pomodoros INTEGER DEFAULT 0, goals_done INTEGER DEFAULT 0);
+""")
+db.execute("INSERT OR IGNORE INTO dragon(id,stage,xp,level,mood,hp,element) VALUES(1,'egg',0,1,0.6,1.0,'fire')")
+db.commit()
+
+STAGES = ["egg","hatchling","juvenile","adult","ancient","legendary"]
+STAGE_XP = {"egg":0,"hatchling":100,"juvenile":350,"adult":800,"ancient":1800,"legendary":4000}
+STAGE_W = {"egg":80,"hatchling":100,"juvenile":140,"adult":180,"ancient":220,"legendary":260}
+STAGE_NAMES = {"egg":"Trứng","hatchling":"Rồng con","juvenile":"Rồng vị thành niên","adult":"Rồng trưởng thành","ancient":"Rồng cổ đại","legendary":"Rồng huyền thoại"}
+STAGE_FILES = {"egg":"trung.png","hatchling":"Rong-con.png","juvenile":"Rong-vi-thanh-nien.png","adult":"Rong-truong-thanh.png","ancient":"Rong-co-dai.png","legendary":"rong-huyen-thoai.png"}
+ELEMENTS = {"fire":"Lửa","ice":"Băng","gold":"Vàng","shadow":"Bóng tối"}
+ACHIEVEMENTS = {
+    "first_word":"Lời đầu tiên","first_goal":"Mục tiêu đầu","first_evo":"Tiến hoá đầu","pomo_5":"5 Pomodoro","pomo_20":"20 Pomodoro",
+    "streak_3":"3 ngày liên tiếp","streak_7":"7 ngày liên tiếp","level_5":"Level 5","level_10":"Level 10","legend":"Huyền thoại"
+}
+
+SPRITES = {}
+for stage, fname in STAGE_FILES.items():
+    path = os.path.join(IMAGE_DIR, fname)
+    if os.path.exists(path):
+        px = QPixmap(path)
+        if px.width() > 0:
+            w = STAGE_W[stage]
+            ratio = px.height() / px.width()
+            SPRITES[stage] = px.scaled(w, int(w * ratio), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+def get_dragon():
+    return dict(db.execute("SELECT * FROM dragon WHERE id=1").fetchone())
+
+def save_dragon(**kw):
+    db.execute(f"UPDATE dragon SET {', '.join(f'{k}=?' for k in kw)} WHERE id=1", list(kw.values()))
+    db.commit()
+
+def add_xp(n):
+    d = get_dragon()
+    nx = d["xp"] + n
+    cs, ns = d["stage"], d["stage"]
+    for s in STAGES:
+        if nx >= STAGE_XP[s]: ns = s
+    nl = d["level"]
+    if ns != cs: nl += 1
+    save_dragon(xp=nx, stage=ns, level=nl)
+    return ns != cs, ns, nl
+
+def update_mood(delta):
+    d = get_dragon()
+    save_dragon(mood=max(0.0, min(1.0, d["mood"] + delta)))
+
+def update_streak(stype, ok):
+    today = date.today().isoformat()
+    row = db.execute("SELECT * FROM streaks WHERE type=?", (stype,)).fetchone()
+    if not row:
+        db.execute("INSERT INTO streaks(type,count,best,last_date) VALUES(?,0,0,?)", (stype, today))
+        row = db.execute("SELECT * FROM streaks WHERE type=?", (stype,)).fetchone()
+    r = dict(row)
+    ld = r["last_date"]
+    if ok:
+        if ld == today: pass
+        elif ld and (date.today() - date.fromisoformat(ld)).days == 1:
+            r["count"] += 1
+        else:
+            r["count"] = 1
+        r["best"] = max(r["count"], r["best"])
+        r["last_date"] = today
+    else:
+        if ld != today: r["count"] = 0; r["last_date"] = today
+    db.execute("UPDATE streaks SET count=?, best=?, last_date=? WHERE type=?", (r["count"], r["best"], r["last_date"], stype))
+    db.commit()
+
+def unlock_ach(ach_id):
+    if db.execute("SELECT id FROM achievements WHERE id=?", (ach_id,)).fetchone(): return
+    name = ACHIEVEMENTS.get(ach_id, ach_id)
+    db.execute("INSERT INTO achievements(id,name,desc,unlocked_at) VALUES(?,?,?,?)", (ach_id, name, "", datetime.now().isoformat()))
+    db.commit()
+    return name
+
+def strip_border(hwnd):
+    try:
+        dwm = ctypes.windll.dwmapi
+        dwm.DwmSetWindowAttribute(wintypes.HWND(hwnd), wintypes.DWORD(33), ctypes.byref(wintypes.DWORD(1)), ctypes.sizeof(wintypes.DWORD))
+        dwm.DwmSetWindowAttribute(wintypes.HWND(hwnd), wintypes.DWORD(34), ctypes.byref(wintypes.DWORD(0)), ctypes.sizeof(wintypes.DWORD))
+    except: pass
+
+class LLM:
+    def __init__(self):
+        self.url = "http://localhost:11434/api/chat"
+        self.model = "qwen3:4b"
+    def ask(self, system_prompt, msg, callback):
+        def go():
+            try:
+                data = json.dumps({"model":self.model,"messages":[{"role":"system","content":system_prompt},{"role":"user","content":msg}],"stream":False,"options":{"temperature":0.8,"num_predict":60}}).encode()
+                req = urllib.request.Request(self.url, data=data, headers={"Content-Type":"application/json"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    text = json.loads(r.read())["message"]["content"].strip()
+                    callback(text[:200] if text else None)
+            except: callback(None)
+        threading.Thread(target=go, daemon=True).start()
+
+class Dragon:
+    def __init__(self):
+        self.frame = 0; self.blink_timer = 0; self.blinking = False
+        self.speech_text = ""; self.speech_timer = 0; self.sleeping = False; self.evo_flash = 0
+        self.hp_bar = 1.0; self.mood_icon = ""
+
+    def speak(self, txt):
+        self.speech_text = txt; self.speech_timer = 250
+
+    def tick(self):
+        self.frame += 1
+        if self.evo_flash > 0: self.evo_flash -= 1
+        if self.blink_timer > 0: self.blink_timer -= 1
+        elif random.random() < 0.02: self.blinking = True; self.blink_timer = 4
+        else: self.blinking = False
+        if self.speech_timer > 0:
+            self.speech_timer -= 1
+            if self.speech_timer == 0: self.speech_text = ""
+
+    def draw(self, p, w, h, stage, mood, hp):
+        self.tick()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        px = SPRITES.get(stage)
+        if px is None: return
+        cx, cy = w / 2, h * 0.55
+        bob = math.sin(self.frame * 0.07) * 2.5 if not self.sleeping else math.sin(self.frame * 0.04) * 1.5
+        cy += bob
+        pw, ph = px.width(), px.height()
+        x, y = int(cx - pw / 2), int(cy - ph / 2)
+        if self.sleeping: p.setOpacity(0.6)
+        p.drawPixmap(x, y, px)
+        p.setOpacity(1.0)
+
+        # HP bar
+        bar_w, bar_h = pw, 4
+        bx, by_bar = x, y + ph + 2
+        p.setBrush(QBrush(QColor("#333333")))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(QRectF(bx, by_bar, bar_w, bar_h), 2, 2)
+        hp_color = QColor("#4CAF50") if hp > 0.5 else QColor("#FF9800") if hp > 0.25 else QColor("#F44336")
+        p.setBrush(QBrush(hp_color))
+        p.drawRoundedRect(QRectF(bx, by_bar, bar_w * hp, bar_h), 2, 2)
+
+        # Mood icon
+        mood_icons = {range(0, 25): "(╥_╥)", range(25, 50): "(｡•́︿•̀｡)", range(50, 75): "(◕‿◕)", range(75, 101): "(ﾉ◕ヮ◕)ﾉ"}
+        mi = "(◕‿◕)"
+        for r, icon in mood_icons.items():
+            if int(mood * 100) in r: mi = icon
+        fnt = QFont("Segoe UI", 8)
+        p.setFont(fnt)
+        p.setPen(QPen(QColor("#666"), 1))
+        p.drawText(QPointF(cx - 20, y - 6), mi)
+
+        # Evo flash
+        if self.evo_flash > 0:
+            alpha = int(100 * (self.evo_flash / 60))
+            flash = QColor("#FFD700"); flash.setAlpha(alpha)
+            p.setBrush(QBrush(flash)); p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(int(cx), int(cy)), 60, 60)
+
+        if self.speech_text:
+            self._draw_bubble(p, w, cx, cy, bob, y)
+
+    def _draw_bubble(self, p, w, cx, cy, bob, dragon_top):
+        fnt = QFont("Segoe UI", 10); p.setFont(fnt)
+        fm = p.fontMetrics(); mw = min(320, w - 20)
+        lines, cur = [], ""
+        for word in self.speech_text.split(" "):
+            test = cur + (" " if cur else "") + word
+            if fm.horizontalAdvance(test) < mw - 24: cur = test
+            else:
+                if cur: lines.append(cur)
+                cur = word
+        if cur: lines.append(cur)
+        if not lines: lines = [self.speech_text]
+        lh = fm.height() + 2
+        bw = max(max((fm.horizontalAdvance(l) for l in lines), default=0) + 24, 60)
+        bw = min(bw, mw); bh = len(lines) * lh + 20
+        bx = cx - bw / 2; by2 = max(5, dragon_top - bh - 4)
+        br = QRectF(bx, by2, bw, bh)
+        bg = QColor("#FFFFFF"); bg.setAlpha(240)
+        p.setBrush(QBrush(bg)); p.setPen(QPen(QColor("#AAAAAA"), 1))
+        p.drawRoundedRect(br, 12, 12)
+        p.setPen(QPen(QColor("#333333"), 1))
+        for i, line in enumerate(lines):
+            p.drawText(QPointF(bx + 12, by2 + lh * (i + 1) + 2), line)
+
+class Pet(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.dragon = Dragon(); self.llm = LLM()
+        self._drag = False; self._off = QPoint(); self._idle_c = 0; self._last_mp = None
+        self._pomo_active = False; self._pomo_sec = 0; self._pomo_timer = None; self._pomo_count = 0
+        self._session_start = time.time(); self._last_eye = time.time(); self._burnout_warned = False; self._sleep_warned = False
+        d = get_dragon(); self._stage = d["stage"]
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        pw = STAGE_W.get(self._stage, 80)
+        self.resize(max(pw + 60, 280), pw + 110)
+        scr = app.primaryScreen().availableGeometry()
+        self.move(scr.center().x() - self.width() // 2, scr.center().y() - self.height() // 2)
+
+        self.chat = QLineEdit(self)
+        self.chat.setPlaceholderText("Chat với rồng..."); self.chat.setFixedHeight(36)
+        self.chat.setStyleSheet("QLineEdit{background:rgba(255,255,255,248);border:1px solid #bbb;border-radius:8px;padding:4px 14px;font-size:14px;color:#333}")
+        self.chat.returnPressed.connect(self._send); self.chat.hide()
+
+        self.tray = QSystemTrayIcon(self)
+        pm = QPixmap(32,32); pm.fill(Qt.GlobalColor.transparent)
+        tp = QPainter(pm); tp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        tp.setBrush(QBrush(QColor("#FF6B35"))); tp.setPen(QPen(QColor("#E55A2B"),1))
+        tp.drawEllipse(QPointF(16,18), 10.0, 9.0)
+        tp.setBrush(QBrush(QColor("#FFF"))); tp.setPen(QPen(QColor("#E55A2B"),0.5))
+        tp.drawEllipse(QPointF(11,10), 3.0, 3.5); tp.drawEllipse(QPointF(21,10), 3.0, 3.5)
+        tp.setBrush(QBrush(QColor("#222"))); tp.setPen(Qt.PenStyle.NoPen)
+        tp.drawEllipse(QPointF(10,9), 1.5, 1.5); tp.drawEllipse(QPointF(20,9), 1.5, 1.5)
+        tp.setPen(QPen(QColor("#FF4500"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        tp.drawLine(9,3,5,-2); tp.drawLine(23,3,27,-2); tp.end()
+        self.tray.setIcon(QIcon(pm)); self.tray.setToolTip("Dragon Companion")
+        m = QMenu()
+        m.addAction("Show/Hide").triggered.connect(lambda: self.hide() if self.isVisible() else self.show())
+        m.addAction("Feed (+10 XP)").triggered.connect(self._feed)
+        self._pomo_action = m.addAction("Start Pomodoro (25m)")
+        self._pomo_action.triggered.connect(self._toggle_pomo)
+        m.addAction("Goals").triggered.connect(self._show_goals)
+        m.addSeparator(); m.addAction("Exit").triggered.connect(app.quit)
+        self.tray.setContextMenu(m); self.tray.show()
+
+        self._at = QTimer(self); self._at.timeout.connect(self.update); self._at.start(33)
+        self._it = QTimer(self); self._it.timeout.connect(self._check_idle); self._it.start(15000)
+        self._rt = QTimer(self); self._rt.timeout.connect(self._check_reminders); self._rt.start(60000)
+        update_streak("daily_login", True)
+        self._check_reminders()
+        self._evening_review_setup()
+
+    def _evening_review_setup(self):
+        self._review_done = False
+        self._review_timer = QTimer(self)
+        self._review_timer.timeout.connect(self._check_evening)
+        self._review_timer.start(300000)
+
+    def _check_evening(self):
+        h = datetime.now().hour
+        if h >= 21 and not self._review_done:
+            self._review_done = True
+            goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
+            done = sum(1 for g in goals if g["done"])
+            total = len(goals)
+            if total > 0:
+                pct = done * 100 // total
+                self.dragon.speak(f"Tối rồi! Hôm nay anh đạt {done}/{total} mục tiêu ({pct}%). Ngày mai cố gắng hơn nhé!")
+                if pct >= 80: update_streak("goal_streak", True)
+                else: update_streak("goal_streak", False)
+
+    def _check_idle(self):
+        if not self.dragon.sleeping:
+            self._idle_c += 15
+            if self._idle_c > 300: self.dragon.sleeping = True; self._idle_c = 0
+        else:
+            cp = QCursor.pos()
+            if self._last_mp is not None and self._last_mp != cp:
+                self.dragon.sleeping = False; self._idle_c = 0
+            self._last_mp = cp
+
+    def _check_reminders(self):
+        now = time.time(); h = datetime.now().hour
+        # Eye rest (every 20 min)
+        if now - self._last_eye > 1200:
+            self._last_eye = now
+            if not self.dragon.sleeping:
+                self.dragon.speak("20-20-20! Nhìn xa 20 feet trong 20 giây đi anh!")
+        # Burnout (>10h session)
+        hours = (now - self._session_start) / 3600
+        if hours > 10 and not self._burnout_warned:
+            self._burnout_warned = True
+            self.dragon.speak(f"Cảnh báo! Anh đã làm việc {int(hours)} tiếng liên tục. Nghỉ ngơi đi!")
+        # Sleep guard
+        if h >= 23 and not self._sleep_warned:
+            self._sleep_warned = True
+            self.dragon.speak("Khuya rồi anh ơi! Đi ngủ đi mai còn sức!")
+        if h >= 1 and not self.dragon.sleeping:
+            self.dragon.sleeping = True
+        # HP decay
+        if not self.dragon.sleeping: update_mood(-0.003)
+        d = get_dragon()
+        if d["mood"] < 0.2 and random.random() < 0.1:
+            self.dragon.speak("Em thấy hơi buồn... anh tương tác với em đi!")
+
+    def _toggle_pomo(self):
+        if self._pomo_active:
+            self._pomo_active = False
+            if self._pomo_timer: self._pomo_timer.stop(); self._pomo_timer = None
+            self._pomo_action.setText("Start Pomodoro (25m)")
+            self.dragon.speak("Pomodoro đã dừng. Lần sau cố nhé!")
+        else:
+            self._pomo_active = True; self._pomo_sec = 25 * 60
+            self._pomo_action.setText(f"Pomodoro: {self._pomo_sec//60}m left")
+            self._pomo_timer = QTimer(self); self._pomo_timer.timeout.connect(self._pomo_tick); self._pomo_timer.start(1000)
+            self.dragon.speak("Pomodoro 25 phút bắt đầu! Tập trung nhé anh!")
+
+    def _pomo_tick(self):
+        self._pomo_sec -= 1
+        self._pomo_action.setText(f"Pomodoro: {self._pomo_sec//60}m left")
+        if self._pomo_sec <= 0:
+            self._pomo_active = False
+            if self._pomo_timer: self._pomo_timer.stop(); self._pomo_timer = None
+            self._pomo_action.setText("Start Pomodoro (25m)")
+            self._pomo_count += 1; add_xp(5); update_mood(0.08)
+            self.dragon.evo_flash = 30
+            self.dragon.speak(f"Pomodoro xong! Nghỉ 5 phút đi anh. Tổng: {self._pomo_count} pomo.")
+            if self._pomo_count == 5: self._try_unlock("pomo_5")
+            if self._pomo_count == 20: self._try_unlock("pomo_20")
+        elif self._pomo_sec in (60, 120, 300, 600):
+            self.dragon.speak(f"Còn {self._pomo_sec//60} phút nữa! Cố lên!")
+
+    def _feed(self):
+        evolved, ns, nl = add_xp(10)
+        update_mood(0.05)
+        d = get_dragon()
+        if evolved:
+            self._stage = ns
+            pw = STAGE_W.get(ns, 80); self.resize(max(pw + 60, 280), pw + 110)
+            self.dragon.evo_flash = 60
+            ename = STAGE_NAMES.get(ns, ns)
+            self.dragon.speak(f"TIẾN HOÁ! {ename} - LV.{nl}!")
+            self._try_unlock("first_evo")
+            if ns == "legendary": self._try_unlock("legend")
+            if nl >= 5: self._try_unlock("level_5")
+            if nl >= 10: self._try_unlock("level_10")
+            # Suggest element
+            if nl == 3 and d["element"] == "fire":
+                self.dragon.speak("Gợi ý: Anh có vẻ hợp hệ Băng (kỷ luật) hoặc Vàng (mục tiêu lớn). Muốn đổi không?")
+        else:
+            self.dragon.speak(f"Ngon quá! +10 XP (Tổng: {d['xp']} XP) | Mood: {int(d['mood']*100)}%")
+
+    def _show_goals(self):
+        goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
+        if not goals:
+            self.dragon.speak("Hôm nay chưa có mục tiêu nào. Dùng /goal <text> để thêm!")
+        else:
+            done = sum(1 for g in goals if g["done"])
+            lines = [f"Mục tiêu ({done}/{len(goals)}):"]
+            for g in goals:
+                st = "[x]" if g["done"] else "[ ]"
+                lines.append(f"{st} {g['text']}")
+            self.dragon.speak(" | ".join(lines))
+
+    def _try_unlock(self, ach_id):
+        name = unlock_ach(ach_id)
+        if name: self.dragon.speak(f"Thành tựu mới: {name}!")
+
+    def _send(self):
+        t = self.chat.text().strip(); self.chat.clear(); self.chat.hide()
+        if not t: return
+        tl = t.lower()
+        d = get_dragon()
+
+        if tl.startswith("/goal "):
+            goal_text = t[6:].strip()
+            db.execute("INSERT INTO goals(date,text) VALUES(?,?)", (date.today().isoformat(), goal_text))
+            db.commit(); add_xp(5); update_mood(0.03)
+            self.dragon.speak(f"Đã thêm mục tiêu: {goal_text}")
+            self._try_unlock("first_goal")
+        elif tl.startswith("/done "):
+            try:
+                gid = int(t.split()[1])
+                db.execute("UPDATE goals SET done=1 WHERE id=?", (gid,))
+                db.commit(); add_xp(25); update_mood(0.1)
+                self.dragon.speak("Mục tiêu hoàn thành! +25 XP")
+            except: self.dragon.speak("Dùng: /done <id>")
+        elif tl.startswith("/element "):
+            el = t.split()[1].lower()
+            if el in ELEMENTS:
+                save_dragon(element=el)
+                self.dragon.speak(f"Đã đổi sang hệ {ELEMENTS[el]}!")
+            else: self.dragon.speak(f"Hệ: {', '.join(ELEMENTS.keys())}")
+        elif tl.startswith("/stats"):
+            st = db.execute("SELECT * FROM streaks").fetchall()
+            ach = db.execute("SELECT COUNT(*) as c FROM achievements").fetchone()["c"]
+            self.dragon.speak(f"LV.{d['level']} {STAGE_NAMES.get(self._stage,'?')} | XP:{d['xp']} | Mood:{int(d['mood']*100)}% | Pomos:{self._pomo_count} | Achievements:{ach}")
+        elif any(w in tl for w in ["hello","chào","hi"]):
+            self.dragon.speak("Chào anh! Hôm nay anh muốn làm gì nào?")
+            add_xp(1)
+        elif any(w in tl for w in ["focus","tập trung"]):
+            self.dragon.speak("Có em canh chừng rồi, anh cứ tập trung đi!")
+            add_xp(2)
+        elif any(w in tl for w in ["ngủ","sleep"]):
+            self.dragon.sleeping = True; self.dragon.speak("Zzz... em ngủ đây!")
+        elif any(w in tl for w in ["pomo"]):
+            self._toggle_pomo()
+        else:
+            # Try LLM
+            sys_pmt = "Bạn là rồng Spyro dễ thương. Nói tiếng Việt, thân mật, hài hước, tối đa 2 câu."
+            self.llm.ask(sys_pmt, t, lambda r: self.dragon.speak(r[:200]) if r else self._fallback_reply())
+            add_xp(1); update_mood(0.01)
+
+    def _fallback_reply(self):
+        d = get_dragon()
+        try:
+            idx = STAGES.index(self._stage)
+            xp_next = STAGE_XP[STAGES[idx + 1]] if idx < len(STAGES) - 1 else "MAX"
+        except: xp_next = "?"
+        replies = [
+            f"LV.{d['level']} {STAGE_NAMES.get(self._stage,'?')} | XP: {d['xp']}/{xp_next} | Mood: {int(d['mood']*100)}%",
+            "Em đang nghe đây! Anh muốn gì nào?",
+            "Có chuyện gì vui kể em nghe với!",
+        ]
+        self.dragon.speak(random.choice(replies))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag = True; self._off = e.pos()
+            if self.dragon.sleeping: self.dragon.sleeping = False; self._idle_c = 0
+
+    def mouseMoveEvent(self, e):
+        if self._drag: self.move(self.mapToParent(e.pos()) - self._off)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag = False
+            if (e.pos() - self._off).manhattanLength() < 5:
+                if self.chat.isVisible(): self.chat.hide()
+                else: self.chat.setFixedWidth(self.width() - 16); self.chat.move(8, 5); self.chat.show(); self.chat.setFocus()
+
+    def contextMenuEvent(self, e):
+        d = get_dragon()
+        m = QMenu(self)
+        m.addAction(f"Feed (+10 XP) [XP: {d['xp']}]").triggered.connect(self._feed)
+        m.addAction("Add Goal").triggered.connect(lambda: (self.chat.setText("/goal "), self.chat.setFixedWidth(self.width()-16), self.chat.move(8,5), self.chat.show(), self.chat.setFocus()))
+        pomo_text = "Stop Pomodoro" if self._pomo_active else "Start Pomodoro (25m)"
+        m.addAction(pomo_text).triggered.connect(self._toggle_pomo)
+        m.addAction("Show Goals").triggered.connect(self._show_goals)
+        m.addAction("Stats").triggered.connect(lambda: self.dragon.speak(f"LV.{d['level']} {STAGE_NAMES.get(self._stage,'?')} | {d['xp']} XP | {self._pomo_count} pomos"))
+        m.addSeparator()
+        m.addAction("Hide 30m").triggered.connect(lambda: (self.hide(), QTimer.singleShot(1800000, self.show)))
+        m.addAction("Exit").triggered.connect(app.quit)
+        m.exec(e.globalPos())
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        d = get_dragon()
+        self.dragon.draw(p, self.width(), self.height(), self._stage, d["mood"], d["hp"])
+        p.end()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QTimer.singleShot(0, lambda: strip_border(int(self.winId())))
+
+pet = Pet()
+pet.show()
+d = get_dragon()
+sn = STAGE_NAMES.get(d["stage"], "?")
+pet.dragon.speak(f"Chào anh! Em là {sn} LV.{d['level']}. Hôm nay anh muốn làm gì? /goal <mục tiêu> để bắt đầu nhé!")
+app.exec()
