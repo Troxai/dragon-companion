@@ -614,11 +614,30 @@ class Pet(QWidget):
         pomo_text = "Stop Pomodoro" if self._pomo_active else "Start Pomodoro (25m)"
         m.addAction(pomo_text).triggered.connect(self._toggle_pomo)
         m.addAction("Show Goals").triggered.connect(self._show_goals)
+        m.addAction("Chat Window").triggered.connect(lambda: ChatWindow(self, self.llm, get_dragon).show())
         m.addAction("Stats").triggered.connect(lambda: self.dragon.speak(f"LV.{d['level']} {STAGE_NAMES.get(self._stage,'?')} | {d['xp']} XP | {self._pomo_count} pomos"))
         m.addSeparator()
+        m.addAction("Weekly Letter").triggered.connect(self._weekly_letter)
         m.addAction("Hide 30m").triggered.connect(lambda: (self.hide(), QTimer.singleShot(1800000, self.show)))
         m.addAction("Exit").triggered.connect(app.quit)
         m.exec(e.globalPos())
+
+    def _weekly_letter(self):
+        d = get_dragon()
+        week_ago = (date.today() - timedelta(days=7)).isoformat()
+        goals = db.execute("SELECT * FROM goals WHERE date >= ?", (week_ago,)).fetchall()
+        total_goals = len(goals); done_goals = sum(1 for g in goals if g["done"])
+        streaks = dict(db.execute("SELECT type, best FROM streaks").fetchall())
+        ach_count = db.execute("SELECT COUNT(*) as c FROM achievements").fetchone()["c"]
+        letter = (
+            f"Tuần này anh đã hoàn thành {done_goals}/{total_goals} mục tiêu. "
+            f"Streak dài nhất: {streaks.get('goal_streak',0)} ngày. "
+            f"Achievements: {ach_count}. "
+            f"Rồng đang ở {STAGE_NAMES.get(self._stage,'?')} LV.{d['level']} với {d['xp']} XP. "
+            f"Cố gắng tuần sau nhé!"
+        )
+        self.dragon.speak(letter)
+        speak_tts_async(letter)
 
     def paintEvent(self, e):
         p = QPainter(self)
