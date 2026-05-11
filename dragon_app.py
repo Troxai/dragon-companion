@@ -17,13 +17,13 @@ app.setQuitOnLastWindowClosed(False)
 db = sqlite3.connect(DB_PATH, check_same_thread=False)
 db.row_factory = sqlite3.Row
 db.executescript("""
-    CREATE TABLE IF NOT EXISTS dragon(id INTEGER PRIMARY KEY, stage TEXT DEFAULT 'egg', xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, mood REAL DEFAULT 0.6, hp REAL DEFAULT 1.0, element TEXT DEFAULT 'fire');
+    CREATE TABLE IF NOT EXISTS dragon(id INTEGER PRIMARY KEY, stage TEXT DEFAULT 'egg', xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, mood REAL DEFAULT 0.6, hp REAL DEFAULT 1.0, element TEXT DEFAULT 'fire', name TEXT DEFAULT 'Spyro');
     CREATE TABLE IF NOT EXISTS goals(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, text TEXT, done INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS streaks(type TEXT PRIMARY KEY, count INTEGER DEFAULT 0, best INTEGER DEFAULT 0, last_date TEXT);
     CREATE TABLE IF NOT EXISTS achievements(id TEXT PRIMARY KEY, name TEXT, desc TEXT, unlocked_at TEXT);
     CREATE TABLE IF NOT EXISTS daily_stats(date TEXT PRIMARY KEY, focus_min INTEGER DEFAULT 0, pomodoros INTEGER DEFAULT 0, goals_done INTEGER DEFAULT 0);
 """)
-db.execute("INSERT OR IGNORE INTO dragon(id,stage,xp,level,mood,hp,element) VALUES(1,'egg',0,1,0.6,1.0,'fire')")
+db.execute("INSERT OR IGNORE INTO dragon(id,stage,xp,level,mood,hp,element,name) VALUES(1,'egg',0,1,0.6,1.0,'fire','Spyro')")
 db.commit()
 
 STAGES = ["egg","hatchling","juvenile","adult","ancient","legendary"]
@@ -124,6 +124,11 @@ class Dragon:
         self.frame = 0; self.blink_timer = 0; self.blinking = False
         self.speech_text = ""; self.speech_timer = 0; self.sleeping = False; self.evo_flash = 0
         self.hp_bar = 1.0; self.mood_icon = ""
+        self.particles = []
+        self.breath_phase = random.random() * math.pi * 2
+        self.mouse_x = 0; self.mouse_y = 0
+        self.hover_alpha = 0
+        self.combo = 0; self.combo_timer = 0
 
     def speak(self, txt):
         self.speech_text = txt; self.speech_timer = 250
@@ -137,40 +142,91 @@ class Dragon:
         if self.speech_timer > 0:
             self.speech_timer -= 1
             if self.speech_timer == 0: self.speech_text = ""
+        if self.combo_timer > 0:
+            self.combo_timer -= 1
+            if self.combo_timer == 0: self.combo = 0
+        for i in range(len(self.particles)-1, -1, -1):
+            px, py, vx, vy, life, color, size = self.particles[i]
+            px += vx; py += vy; life -= 1
+            if life <= 0: self.particles.pop(i)
+            else: self.particles[i] = (px, py, vx, vy, life, color, size)
 
-    def draw(self, p, w, h, stage, mood, hp):
+    def add_sparkles(self, count=8):
+        for _ in range(count):
+            self.particles.append((0, random.randint(-30, 10), random.uniform(-1.5, 1.5), random.uniform(-2, -0.5), random.randint(20, 50), "#FFD700", random.uniform(2, 5)))
+
+    def add_hearts(self, count=5):
+        for _ in range(count):
+            self.particles.append((random.randint(-15, 15), -10, random.uniform(-0.5, 0.5), random.uniform(-2.5, -1), random.randint(25, 55), "#FF4081", random.uniform(3, 6)))
+
+    def add_fire(self, count=6):
+        for _ in range(count):
+            self.particles.append((random.randint(-10, 10), 15, random.uniform(-1, 1), random.uniform(-2, -0.3), random.randint(15, 35), random.choice(["#FF4500", "#FF6600", "#FFD700"]), random.uniform(3, 7)))
+
+    def draw(self, p, w, h, stage, mood, hp, drag_name=""):
         self.tick()
+        self.breath_phase += 0.05
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        px = SPRITES.get(stage)
-        if px is None: return
+        px_img = SPRITES.get(stage)
+        if px_img is None: return
         cx, cy = w / 2, h * 0.55
         bob = math.sin(self.frame * 0.07) * 2.5 if not self.sleeping else math.sin(self.frame * 0.04) * 1.5
         cy += bob
-        pw, ph = px.width(), px.height()
+        breath = 1.0 + math.sin(self.breath_phase) * 0.03
+        pw, ph = px_img.width() * breath, px_img.height() * breath
         x, y = int(cx - pw / 2), int(cy - ph / 2)
+
         if self.sleeping: p.setOpacity(0.6)
-        p.drawPixmap(x, y, px)
+        # Draw image with breathing scale
+        p.drawPixmap(QRectF(x, y, pw, ph), px_img)
         p.setOpacity(1.0)
 
         # HP bar
         bar_w, bar_h = pw, 4
         bx, by_bar = x, y + ph + 2
-        p.setBrush(QBrush(QColor("#333333")))
-        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor("#333333"))); p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(QRectF(bx, by_bar, bar_w, bar_h), 2, 2)
         hp_color = QColor("#4CAF50") if hp > 0.5 else QColor("#FF9800") if hp > 0.25 else QColor("#F44336")
         p.setBrush(QBrush(hp_color))
         p.drawRoundedRect(QRectF(bx, by_bar, bar_w * hp, bar_h), 2, 2)
+
+        # Mouse tracking eyes (shift pupils)
+        dx = (self.mouse_x - cx) * 0.03; dy = (self.mouse_y - cy) * 0.03
+        dx = max(-2, min(2, dx)); dy = max(-2, min(2, dy))
 
         # Mood icon
         mood_icons = {range(0, 25): "(╥_╥)", range(25, 50): "(｡•́︿•̀｡)", range(50, 75): "(◕‿◕)", range(75, 101): "(ﾉ◕ヮ◕)ﾉ"}
         mi = "(◕‿◕)"
         for r, icon in mood_icons.items():
             if int(mood * 100) in r: mi = icon
-        fnt = QFont("Segoe UI", 8)
-        p.setFont(fnt)
+        fnt = QFont("Segoe UI", 9); p.setFont(fnt)
         p.setPen(QPen(QColor("#666"), 1))
-        p.drawText(QPointF(cx - 20, y - 6), mi)
+        p.drawText(QPointF(cx - 22, y - 6), mi)
+
+        # Tooltip on hover
+        if self.hover_alpha > 0 and drag_name:
+            fnt2 = QFont("Segoe UI", 8); p.setFont(fnt2)
+            tip = f"{drag_name}"
+            tw = p.fontMetrics().horizontalAdvance(tip)
+            tip_bg = QColor("#333333"); tip_bg.setAlpha(int(self.hover_alpha * 200))
+            p.setBrush(QBrush(tip_bg)); p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(cx - tw/2 - 8, y - 20, tw + 16, 18), 6, 6)
+            p.setPen(QPen(QColor("#FFF"))); p.drawText(QPointF(cx - tw/2, y - 6), tip)
+
+        # Combo display
+        if self.combo >= 3 and self.combo_timer > 0:
+            combo_alpha = int(min(255, self.combo_timer * 8))
+            combo_color = QColor("#FFD700"); combo_color.setAlpha(combo_alpha)
+            fnt3 = QFont("Segoe UI", 14, QFont.Weight.Bold); p.setFont(fnt3)
+            p.setPen(QPen(combo_color))
+            p.drawText(QPointF(cx - 20, y + ph + 20), f"x{self.combo}!")
+
+        # Particles (sparkles, hearts, fire)
+        for px_p, py_p, vx, vy, life, color, size in self.particles:
+            alpha = int(255 * (life / 55))
+            clr = QColor(color); clr.setAlpha(alpha)
+            p.setBrush(QBrush(clr)); p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(cx + px_p, cy + py_p), size * (life/55), size * (life/55))
 
         # Evo flash
         if self.evo_flash > 0:
@@ -247,8 +303,13 @@ class Pet(QWidget):
         m.addSeparator(); m.addAction("Exit").triggered.connect(app.quit)
         self.tray.setContextMenu(m); self.tray.show()
 
-        self._at = QTimer(self); self._at.timeout.connect(self.update); self._at.start(33)
+        self._at = QTimer(self); self._at.timeout.connect(self._anim_tick); self._at.start(33)
         self._it = QTimer(self); self._it.timeout.connect(self._check_idle); self._it.start(15000)
+
+    def _anim_tick(self):
+        if self.dragon.hover_alpha > 0 and not self._drag:
+            self.dragon.hover_alpha = max(0, self.dragon.hover_alpha - 0.02)
+        self.update()
         self._rt = QTimer(self); self._rt.timeout.connect(self._check_reminders); self._rt.start(60000)
         update_streak("daily_login", True)
         self._check_reminders()
@@ -338,6 +399,8 @@ class Pet(QWidget):
         evolved, ns, nl = add_xp(10)
         update_mood(0.05)
         d = get_dragon()
+        self.dragon.add_hearts(6)
+        self.dragon.combo += 1; self.dragon.combo_timer = 60
         if evolved:
             self._stage = ns
             pw = STAGE_W.get(ns, 80); self.resize(max(pw + 60, 280), pw + 110)
@@ -382,6 +445,16 @@ class Pet(QWidget):
             db.commit(); add_xp(5); update_mood(0.03)
             self.dragon.speak(f"Đã thêm mục tiêu: {goal_text}")
             self._try_unlock("first_goal")
+        elif tl.startswith("/name "):
+            new_name = t[6:].strip()
+            if 1 <= len(new_name) <= 20:
+                db.execute("ALTER TABLE dragon ADD COLUMN name TEXT DEFAULT 'Spyro'")
+                try: db.execute("UPDATE dragon SET name=?", (new_name,)); db.commit()
+                except: pass
+                self.dragon.add_sparkles(12)
+                self.dragon.speak(f"Đã đổi tên thành {new_name}! Dễ thương quá!")
+            else:
+                self.dragon.speak("Tên phải từ 1-20 ký tự nhé!")
         elif tl.startswith("/done "):
             try:
                 gid = int(t.split()[1])
@@ -401,10 +474,10 @@ class Pet(QWidget):
             self.dragon.speak(f"LV.{d['level']} {STAGE_NAMES.get(self._stage,'?')} | XP:{d['xp']} | Mood:{int(d['mood']*100)}% | Pomos:{self._pomo_count} | Achievements:{ach}")
         elif any(w in tl for w in ["hello","chào","hi"]):
             self.dragon.speak("Chào anh! Hôm nay anh muốn làm gì nào?")
-            add_xp(1)
+            self.dragon.add_sparkles(5); add_xp(1)
         elif any(w in tl for w in ["focus","tập trung"]):
             self.dragon.speak("Có em canh chừng rồi, anh cứ tập trung đi!")
-            add_xp(2)
+            self.dragon.add_sparkles(3); add_xp(2)
         elif any(w in tl for w in ["ngủ","sleep"]):
             self.dragon.sleeping = True; self.dragon.speak("Zzz... em ngủ đây!")
         elif any(w in tl for w in ["pomo"]):
@@ -435,11 +508,17 @@ class Pet(QWidget):
 
     def mouseMoveEvent(self, e):
         if self._drag: self.move(self.mapToParent(e.pos()) - self._off)
+        self.dragon.mouse_x = e.pos().x(); self.dragon.mouse_y = e.pos().y()
+        self.dragon.hover_alpha = 1.0
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag = False
             if (e.pos() - self._off).manhattanLength() < 5:
+                self.dragon.combo += 1; self.dragon.combo_timer = 45
+                if self.dragon.combo == 5: self.dragon.speak("Combo x5! Anh đang vui mà!")
+                if self.dragon.combo == 10: self.dragon.speak("Combo x10!! Đỉnh quá!")
+                self.dragon.add_sparkles(3)
                 if self.chat.isVisible(): self.chat.hide()
                 else: self.chat.setFixedWidth(self.width() - 16); self.chat.move(8, 5); self.chat.show(); self.chat.setFocus()
 
@@ -460,7 +539,7 @@ class Pet(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         d = get_dragon()
-        self.dragon.draw(p, self.width(), self.height(), self._stage, d["mood"], d["hp"])
+        self.dragon.draw(p, self.width(), self.height(), self._stage, d["mood"], d["hp"], d.get("name", ""))
         p.end()
 
     def showEvent(self, e):
