@@ -486,23 +486,100 @@ class Pet(QWidget):
         elif any(w in tl for w in ["pomo"]):
             self._toggle_pomo()
         else:
-            # Try LLM
-            sys_pmt = "Bạn là rồng Spyro dễ thương. Nói tiếng Việt, thân mật, hài hước, tối đa 2 câu."
-            self.llm.ask(sys_pmt, t, lambda r: self.dragon.speak(r[:200]) if r else self._fallback_reply())
+            # Try LLM with rich context
+            d = get_dragon()
+            h = datetime.now().hour
+            time_ctx = "sáng sớm" if h < 8 else "buổi sáng" if h < 12 else "buổi trưa" if h < 14 else "buổi chiều" if h < 18 else "buổi tối" if h < 22 else "đêm khuya"
+            goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
+            goal_text = ", ".join([g["text"] for g in goals]) if goals else "chưa có mục tiêu"
+            try:
+                idx = STAGES.index(self._stage)
+                xp_next = STAGE_XP[STAGES[idx + 1]] if idx < len(STAGES) - 1 else "MAX"
+            except: xp_next = "?"
+            sys_pmt = (
+                f"Bạn là {d.get('name','Spyro')}, một chú rồng {STAGE_NAMES.get(self._stage,'?')} LV.{d['level']} hệ {ELEMENTS.get(d['element'],'Lửa')}. "
+                f"Tính cách: hài hước, láu cá, nói nhanh gọn (1-2 câu), thân mật kiểu bạn bè. Bạn đang ở cùng chủ nhân vào {time_ctx}. "
+                f"Mood của bạn: {int(d['mood']*100)}%. Mục tiêu hôm nay: {goal_text}. "
+                f"Trả lời bằng tiếng Việt tự nhiên, đúng chất rồng, ngắn gọn."
+            )
+            self.llm.ask(sys_pmt, t, lambda r: self.dragon.speak(r[:250]) if r else self._smart_reply(t))
             add_xp(1); update_mood(0.01)
 
-    def _fallback_reply(self):
+    def _smart_reply(self, msg):
         d = get_dragon()
+        tl = msg.lower()
+        h = datetime.now().hour
         try:
             idx = STAGES.index(self._stage)
             xp_next = STAGE_XP[STAGES[idx + 1]] if idx < len(STAGES) - 1 else "MAX"
         except: xp_next = "?"
-        replies = [
-            f"LV.{d['level']} {STAGE_NAMES.get(self._stage,'?')} | XP: {d['xp']}/{xp_next} | Mood: {int(d['mood']*100)}%",
-            "Em đang nghe đây! Anh muốn gì nào?",
-            "Có chuyện gì vui kể em nghe với!",
+
+        # Time-aware morning greeting
+        if any(w in tl for w in ["sáng","morning","chào buổi sáng","good morning"]):
+            goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
+            if not goals:
+                return self.dragon.speak(f"Chào buổi sáng anh! Hôm nay anh định làm gì? /goal <mục tiêu> để em theo dõi cho!")
+            else:
+                return self.dragon.speak(f"Chào buổi sáng! Hôm nay có {len(goals)} mục tiêu, mình cùng cố gắng nhé!")
+
+        # Time-aware evening
+        if h >= 20 and any(w in tl for w in ["tối","night","ngủ","ngon"]):
+            goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
+            done = sum(1 for g in goals if g["done"])
+            total = len(goals)
+            if total > 0:
+                return self.dragon.speak(f"Chúc anh ngủ ngon! Hôm nay {done}/{total} mục tiêu {'- xuất sắc!' if done==total else '- mai cố gắng thêm nhé!'}")
+            return self.dragon.speak("Chúc anh ngủ ngon! Mai mình lại chiến đấu tiếp!")
+
+        # Sad/mood check
+        if any(w in tl for w in ["buồn","sad","chán","mệt mỏi"]):
+            return self.dragon.speak(f"Em hiểu mà. Đi uống miếng nước, hít thở sâu 3 lần đi anh. Rồi mình quay lại chiến sau! Bây giờ mood em đang {int(d['mood']*100)}%, anh làm em vui lên tí đi!")
+
+        # Happy
+        if any(w in tl for w in ["vui","happy","tuyệt","thích","yêu"]):
+            self.dragon.add_hearts(8)
+            return self.dragon.speak("Em cũng vui quá! Yêu anh nhất luôn! (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧")
+
+        # Ask about goals
+        if any(w in tl for w in ["mục tiêu","goal","kế hoạch","plan","làm gì"]):
+            goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
+            if not goals:
+                return self.dragon.speak("Hôm nay chưa có mục tiêu nào! Gõ /goal <việc cần làm> để em theo dõi cho anh nhé!")
+            lines = [f"Mục tiêu hôm nay ({sum(1 for g in goals if g['done'])}/{len(goals)}):"]
+            for i, g in enumerate(goals):
+                st = "[x]" if g["done"] else "[ ]"
+                lines.append(f"{st} {i+1}. {g['text']}")
+            return self.dragon.speak(" | ".join(lines))
+
+        # Motivate
+        if any(w in tl for w in ["động viên","motivate","cố lên","khó","nản"]):
+            quotes = [
+                f"Anh làm được mà! Nhìn em nè - từ quả trứng lên {STAGE_NAMES.get(self._stage,'?')} LV.{d['level']} luôn!",
+                "Mỗi lần anh focus 25 phút là em được XP đó. Cùng tiến bộ nha!",
+                f"Người ta nói rồng {STAGE_NAMES.get(self._stage,'?')} chỉ ở cạnh người chăm chỉ thôi đó!",
+                "Thất bại là mẹ thành công. Quan trọng là đứng dậy đi tiếp!",
+            ]
+            return self.dragon.speak(random.choice(quotes))
+
+        # Ask about dragon
+        if any(w in tl for w in ["ai","tên","mày","rồng","dragon","spyro","là gì"]):
+            return self.dragon.speak(f"Em là {d.get('name','Spyro')}, {STAGE_NAMES.get(self._stage,'?')} LV.{d['level']} hệ {ELEMENTS.get(d['element'],'Lửa')}. Em sống để canh chừng anh làm việc!")
+
+        # Help
+        if any(w in tl for w in ["help","giúp","lệnh","command","hướng dẫn"]):
+            return self.dragon.speak("Lệnh: /goal <text> thêm mục tiêu | /done <id> hoàn thành | /stats xem thống kê | /name <tên> đổi tên | /element <hệ> đổi hệ. Chat thường thì em trả lời!")
+
+        # Default smart response
+        reply_pool = [
+            f"Em đây! {d.get('name','Spyro')} - {STAGE_NAMES.get(self._stage,'?')} LV.{d['level']} | XP: {d['xp']}/{xp_next} | Mood: {int(d['mood']*100)}%",
+            f"Anh gọi em à? Hôm nay anh focus được bao nhiêu phút rồi?",
+            "Em đang nghe đây! Kể em nghe anh đang làm gì đi!",
         ]
-        self.dragon.speak(random.choice(replies))
+        if h >= 22:
+            reply_pool.append("Khuya rồi anh ơi! Mai mình làm tiếp được không?")
+        if self._stage == "egg":
+            reply_pool.append("Em vẫn còn là trứng... anh feed em để em nở nha!")
+        self.dragon.speak(random.choice(reply_pool))
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
