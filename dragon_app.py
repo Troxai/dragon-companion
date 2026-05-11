@@ -113,7 +113,7 @@ class LLM:
             try:
                 data = json.dumps({"model":self.model,"messages":[{"role":"system","content":system_prompt},{"role":"user","content":msg}],"stream":False,"options":{"temperature":0.8,"num_predict":60}}).encode()
                 req = urllib.request.Request(self.url, data=data, headers={"Content-Type":"application/json"})
-                with urllib.request.urlopen(req, timeout=10) as r:
+                with urllib.request.urlopen(req, timeout=8) as r:
                     text = json.loads(r.read())["message"]["content"].strip()
                     callback(text[:200] if text else None)
             except: callback(None)
@@ -131,7 +131,7 @@ class Dragon:
         self.combo = 0; self.combo_timer = 0
 
     def speak(self, txt):
-        self.speech_text = txt; self.speech_timer = 250
+        self.speech_text = txt; self.speech_timer = 150
 
     def tick(self):
         self.frame += 1
@@ -271,6 +271,7 @@ class Pet(QWidget):
         self._drag = False; self._off = QPoint(); self._idle_c = 0; self._last_mp = None
         self._pomo_active = False; self._pomo_sec = 0; self._pomo_timer = None; self._pomo_count = 0
         self._session_start = time.time(); self._last_eye = time.time(); self._burnout_warned = False; self._sleep_warned = False
+        self._mood_warned = 0
         d = get_dragon(); self._stage = d["stage"]
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -365,11 +366,13 @@ class Pet(QWidget):
             self.dragon.speak("Khuya rồi anh ơi! Đi ngủ đi mai còn sức!")
         if h >= 1 and not self.dragon.sleeping:
             self.dragon.sleeping = True
-        # HP decay
-        if not self.dragon.sleeping: update_mood(-0.003)
+        # HP decay (slower)
+        if not self.dragon.sleeping: update_mood(-0.001)
         d = get_dragon()
-        if d["mood"] < 0.2 and random.random() < 0.1:
-            self.dragon.speak("Em thấy hơi buồn... anh tương tác với em đi!")
+        now_ts = time.time()
+        if d["mood"] < 0.2 and now_ts - self._mood_warned > 600:
+            self._mood_warned = now_ts
+            self.dragon.speak("Em thấy hơi buồn... anh nói chuyện với em đi!")
 
     def _toggle_pomo(self):
         if self._pomo_active:
@@ -487,6 +490,7 @@ class Pet(QWidget):
             self._toggle_pomo()
         else:
             # Try LLM with rich context
+            self.dragon.speak("Để em nghĩ...")
             d = get_dragon()
             h = datetime.now().hour
             time_ctx = "sáng sớm" if h < 8 else "buổi sáng" if h < 12 else "buổi trưa" if h < 14 else "buổi chiều" if h < 18 else "buổi tối" if h < 22 else "đêm khuya"
