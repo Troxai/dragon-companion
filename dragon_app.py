@@ -451,9 +451,9 @@ class Pet(QWidget):
         elif tl.startswith("/name "):
             new_name = t[6:].strip()
             if 1 <= len(new_name) <= 20:
-                db.execute("ALTER TABLE dragon ADD COLUMN name TEXT DEFAULT 'Spyro'")
-                try: db.execute("UPDATE dragon SET name=?", (new_name,)); db.commit()
+                try: db.execute("ALTER TABLE dragon ADD COLUMN name TEXT DEFAULT 'Spyro'")
                 except: pass
+                db.execute("UPDATE dragon SET name=?", (new_name,)); db.commit()
                 self.dragon.add_sparkles(12)
                 self.dragon.speak(f"Đã đổi tên thành {new_name}! Dễ thương quá!")
             else:
