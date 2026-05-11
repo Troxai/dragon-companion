@@ -30,7 +30,7 @@ STAGES = ["egg","hatchling","juvenile","adult","ancient","legendary"]
 STAGE_XP = {"egg":0,"hatchling":100,"juvenile":350,"adult":800,"ancient":1800,"legendary":4000}
 STAGE_W = {"egg":80,"hatchling":100,"juvenile":140,"adult":180,"ancient":220,"legendary":260}
 STAGE_NAMES = {"egg":"Trứng","hatchling":"Rồng con","juvenile":"Rồng vị thành niên","adult":"Rồng trưởng thành","ancient":"Rồng cổ đại","legendary":"Rồng huyền thoại"}
-STAGE_FILES = {"egg":"trung.png","hatchling":"Rong-con.png","juvenile":"Rong-vi-thanh-nien.png","adult":"Rong-truong-thanh.png","ancient":"Rong-co-dai.png","legendary":"rong-huyen-thoai.png"}
+STAGE_FILES = {"egg":"trung.png","hatchling":"Rồng-con.png","juvenile":"Rồng-vị-thành-niên.png","adult":"Rồng-trưởng-thành.png","ancient":"Rồng-cổ-đại.png","legendary":"rồng-huyền-thoại.png"}
 ELEMENTS = {"fire":"Lửa","ice":"Băng","gold":"Vàng","shadow":"Bóng tối"}
 ACHIEVEMENTS = {
     "first_word":"Lời đầu tiên","first_goal":"Mục tiêu đầu","first_evo":"Tiến hoá đầu","pomo_5":"5 Pomodoro","pomo_20":"20 Pomodoro",
