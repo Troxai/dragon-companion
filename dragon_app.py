@@ -178,7 +178,9 @@ class Dragon:
 
         if self.sleeping: p.setOpacity(0.6)
         # Draw image with breathing scale
-        p.drawPixmap(QRectF(x, y, pw, ph), px_img)
+        target = QRectF(x, y, pw, ph)
+        source = QRectF(0, 0, px_img.width(), px_img.height())
+        p.drawPixmap(target, px_img, source)
         p.setOpacity(1.0)
 
         # HP bar
@@ -272,6 +274,7 @@ class Pet(QWidget):
         d = get_dragon(); self._stage = d["stage"]
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent;")
         pw = STAGE_W.get(self._stage, 80)
         self.resize(max(pw + 60, 280), pw + 110)
         scr = app.primaryScreen().availableGeometry()
