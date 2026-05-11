@@ -1,4 +1,4 @@
-import sys, math, random, ctypes, sqlite3, os, json, threading, urllib.request, time
+import sys, math, random, ctypes, sqlite3, os, json, threading, urllib.request, time, winsound
 from ctypes import wintypes
 from datetime import datetime, date
 from PyQt6.QtWidgets import QApplication, QWidget, QLineEdit, QSystemTrayIcon, QMenu
@@ -89,6 +89,25 @@ def update_streak(stype, ok):
         if ld != today: r["count"] = 0; r["last_date"] = today
     db.execute("UPDATE streaks SET count=?, best=?, last_date=? WHERE type=?", (r["count"], r["best"], r["last_date"], stype))
     db.commit()
+
+
+RESPONSES_PATH = os.path.join(APP_DIR, "responses.json")
+def load_custom_responses():
+    try:
+        with open(RESPONSES_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except: return {}
+def save_custom_responses(r):
+    with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
+        json.dump(r, f, ensure_ascii=False, indent=2)
+CUSTOM_RESPONSES = load_custom_responses()
+def play_sound(name):
+    try:
+        if name == "feed": winsound.Beep(600, 100)
+        elif name == "evo": winsound.Beep(1000, 200)
+        elif name == "achievement": winsound.Beep(1200, 150)
+    except: pass
+
 
 def unlock_ach(ach_id):
     if db.execute("SELECT id FROM achievements WHERE id=?", (ach_id,)).fetchone(): return
@@ -272,6 +291,7 @@ class Pet(QWidget):
         self._pomo_active = False; self._pomo_sec = 0; self._pomo_timer = None; self._pomo_count = 0
         self._session_start = time.time(); self._last_eye = time.time(); self._burnout_warned = False; self._sleep_warned = False
         self._mood_warned = 0
+        self._last_water = time.time(); self._last_posture = time.time()
         d = get_dragon(); self._stage = d["stage"]
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -360,6 +380,15 @@ class Pet(QWidget):
         if hours > 10 and not self._burnout_warned:
             self._burnout_warned = True
             self.dragon.speak(f"Cảnh báo! Anh đã làm việc {int(hours)} tiếng liên tục. Nghỉ ngơi đi!")
+        
+        if now - self._last_water > 3600:
+            self._last_water = now
+            if not self.dragon.sleeping:
+                self.dragon.speak("Uống miếng nước đi anh! Cơ thể cần nước nè!")
+        if now - self._last_posture > 2400:
+            self._last_posture = now
+            if not self.dragon.sleeping:
+                self.dragon.speak("Ngồi thẳng lưng lên nào! Đừng gù đấy!")
         # Sleep guard
         if h >= 23 and not self._sleep_warned:
             self._sleep_warned = True
@@ -402,6 +431,7 @@ class Pet(QWidget):
             self.dragon.speak(f"Còn {self._pomo_sec//60} phút nữa! Cố lên!")
 
     def _feed(self):
+        play_sound("feed")
         evolved, ns, nl = add_xp(10)
         update_mood(0.05)
         d = get_dragon()
@@ -412,6 +442,7 @@ class Pet(QWidget):
             pw = STAGE_W.get(ns, 80); self.resize(max(pw + 60, 280), pw + 110)
             self.dragon.evo_flash = 60
             ename = STAGE_NAMES.get(ns, ns)
+            play_sound("evo")
             self.dragon.speak(f"TIẾN HOÁ! {ename} - LV.{nl}!")
             self._try_unlock("first_evo")
             if ns == "legendary": self._try_unlock("legend")
@@ -437,7 +468,9 @@ class Pet(QWidget):
 
     def _try_unlock(self, ach_id):
         name = unlock_ach(ach_id)
-        if name: self.dragon.speak(f"Thành tựu mới: {name}!")
+        if name:
+            play_sound("achievement")
+            self.dragon.speak(f"Thành tựu mới: {name}!")
 
     def _send(self):
         t = self.chat.text().strip(); self.chat.clear(); self.chat.hide()
@@ -478,6 +511,34 @@ class Pet(QWidget):
             st = db.execute("SELECT * FROM streaks").fetchall()
             ach = db.execute("SELECT COUNT(*) as c FROM achievements").fetchone()["c"]
             self.dragon.speak(f"LV.{d['level']} {STAGE_NAMES.get(self._stage,'?')} | XP:{d['xp']} | Mood:{int(d['mood']*100)}% | Pomos:{self._pomo_count} | Achievements:{ach}")
+        elif tl.startswith("/teach "):
+            parts = t[7:].split("|", 1)
+            if len(parts) == 2:
+                keyword = parts[0].strip().lower()
+                response = parts[1].strip()
+                if keyword and response:
+                    CUSTOM_RESPONSES[keyword] = response
+                    save_custom_responses(CUSTOM_RESPONSES)
+                    self.dragon.add_sparkles(10)
+                    self.dragon.speak(f"Dạy xong! Khi anh nói '{keyword}' em sẽ trả lời riêng!")
+                else:
+                    self.dragon.speak("Dùng: /teach <từ khoá> | <câu trả lời>")
+            else:
+                self.dragon.speak("Dùng: /teach <từ khoá> | <câu trả lời>")
+        elif tl.startswith("/forget "):
+            keyword = t[8:].strip().lower()
+            if keyword in CUSTOM_RESPONSES:
+                del CUSTOM_RESPONSES[keyword]
+                save_custom_responses(CUSTOM_RESPONSES)
+                self.dragon.speak(f"Đã quên '{keyword}'!")
+            else:
+                self.dragon.speak(f"Chưa được dạy '{keyword}' mà?")
+        elif tl.startswith("/list"):
+            if CUSTOM_RESPONSES:
+                keys = list(CUSTOM_RESPONSES.keys())[:10]
+                self.dragon.speak(f"Em biết {len(CUSTOM_RESPONSES)} câu: {', '.join(keys)}")
+            else:
+                self.dragon.speak("Em chưa được dạy gì! Dùng /teach <keyword> | <response> nha!")
         elif any(w in tl for w in ["hello","chào","hi"]):
             self.dragon.speak("Chào anh! Hôm nay anh muốn làm gì nào?")
             self.dragon.add_sparkles(5); add_xp(1)
@@ -489,6 +550,12 @@ class Pet(QWidget):
         elif any(w in tl for w in ["pomo"]):
             self._toggle_pomo()
         else:
+            # Check custom taught responses first
+            for keyword, response in CUSTOM_RESPONSES.items():
+                if keyword in tl:
+                    self.dragon.speak(response)
+                    add_xp(1); update_mood(0.01)
+                    return
             # Try LLM with rich context
             self.dragon.speak("Để em nghĩ...")
             d = get_dragon()
