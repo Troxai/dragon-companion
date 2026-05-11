@@ -451,17 +451,6 @@ class Pet(QWidget):
                 self.llm.ask("Reply only YES or NO.", prompt,
                     lambda r: self.dragon.speak(f"Anh bảo '{goal_texts[:40]}...' nhưng đang '{title[:30]}'! Quay lại focus đi!") if r and "NO" in r.upper() and "YES" not in r.upper() else None)
         self._last_app = exe; self._last_title = title
-        # Morning ritual
-        h = datetime.now().hour
-        work_apps = ["code", "devenv", "pycharm", "idea", "notepad++", "terminal", "cmd", "powershell", "slack", "teams", "chrome", "msedge", "firefox"]
-        if not getattr(self, '_morning_done', False) and h < 12 and not self.dragon.sleeping:
-            if any(w in exe.lower() for w in work_apps):
-                goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
-                if not goals:
-                    self.dragon.speak("Chào buổi sáng! Anh định làm gì hôm nay? /goal <mục tiêu> nha!")
-                else:
-                    self.dragon.speak(f"Chào buổi sáng! Hôm nay có {len(goals)} mục tiêu, cùng chiến thôi!")
-                self._morning_done = True
 
     def _toggle_pomo(self):
         if self._pomo_active:
@@ -780,5 +769,14 @@ pet = Pet()
 pet.show()
 d = get_dragon()
 sn = STAGE_NAMES.get(d["stage"], "?")
-pet.dragon.speak(f"Chào anh! Em là {sn} LV.{d['level']}. Hôm nay anh muốn làm gì? /goal <mục tiêu> để bắt đầu nhé!")
+# Morning ritual
+h = datetime.now().hour
+if h < 12:
+    goals = db.execute("SELECT * FROM goals WHERE date=?", (date.today().isoformat(),)).fetchall()
+    if not goals:
+        pet.dragon.speak(f"Chào buổi sáng anh! Hôm nay anh định làm gì? /goal <mục tiêu> để em theo dõi cho nha!")
+    else:
+        pet.dragon.speak(f"Chào buổi sáng! Hôm nay có {len(goals)} mục tiêu: {', '.join([g['text'] for g in goals[:2]])}. Cùng chiến nào!")
+else:
+    pet.dragon.speak(f"Chào anh! Em là {sn} LV.{d['level']}. Hôm nay anh muốn làm gì? /goal <mục tiêu> để bắt đầu nhé!")
 app.exec()
