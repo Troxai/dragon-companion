@@ -315,6 +315,7 @@ class Pet(QWidget):
         self._mood_warned = 0
         self._last_water = time.time(); self._last_posture = time.time()
         self._multitask_count = 0; self._last_multitask_warn = 0
+        self._last_app = ""; self._last_switch = time.time(); self._last_title = ""
         d = get_dragon(); self._stage = d["stage"]
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
