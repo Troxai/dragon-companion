@@ -725,6 +725,9 @@ class Pet(QWidget):
                 if self.chat.isVisible(): self.chat.hide()
                 else: self.chat.setFixedWidth(self.width() - 16); self.chat.move(8, 5); self.chat.show(); self.chat.setFocus()
 
+    def contextMenuEvent(self, e):
+        self._show_context_menu(e.globalPos())
+
     def _show_context_menu(self, pos):
         d = get_dragon()
         m = QMenu(self)
