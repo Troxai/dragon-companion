@@ -706,6 +706,8 @@ class Pet(QWidget):
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag = True; self._off = e.pos()
             if self.dragon.sleeping: self.dragon.sleeping = False; self._idle_c = 0
+        elif e.button() == Qt.MouseButton.RightButton:
+            self._show_context_menu(e.globalPos())
 
     def mouseMoveEvent(self, e):
         if self._drag: self.move(self.mapToParent(e.pos()) - self._off)
@@ -723,7 +725,7 @@ class Pet(QWidget):
                 if self.chat.isVisible(): self.chat.hide()
                 else: self.chat.setFixedWidth(self.width() - 16); self.chat.move(8, 5); self.chat.show(); self.chat.setFocus()
 
-    def contextMenuEvent(self, e):
+    def _show_context_menu(self, pos):
         d = get_dragon()
         m = QMenu(self)
         m.addAction(f"Feed (+10 XP) [XP: {d['xp']}]").triggered.connect(self._feed)
@@ -731,13 +733,12 @@ class Pet(QWidget):
         pomo_text = "Stop Pomodoro" if self._pomo_active else "Start Pomodoro (25m)"
         m.addAction(pomo_text).triggered.connect(self._toggle_pomo)
         m.addAction("Show Goals").triggered.connect(self._show_goals)
-        m.addAction("Chat Window").triggered.connect(lambda: ChatWindow(self, self.llm, get_dragon).show())
         m.addAction("Stats").triggered.connect(lambda: self.dragon.speak(f"LV.{d['level']} {STAGE_NAMES.get(self._stage,'?')} | {d['xp']} XP | {self._pomo_count} pomos"))
         m.addSeparator()
         m.addAction("Weekly Letter").triggered.connect(self._weekly_letter)
         m.addAction("Hide 30m").triggered.connect(lambda: (self.hide(), QTimer.singleShot(1800000, self.show)))
         m.addAction("Exit").triggered.connect(app.quit)
-        m.exec(e.globalPos())
+        m.exec(pos)
 
     def _weekly_letter(self):
         d = get_dragon()
