@@ -707,7 +707,7 @@ class Pet(QWidget):
             self._drag = True; self._off = e.pos()
             if self.dragon.sleeping: self.dragon.sleeping = False; self._idle_c = 0
         elif e.button() == Qt.MouseButton.RightButton:
-            self._show_context_menu(e.globalPos())
+            self._show_context_menu(e.globalPosition().toPoint())
 
     def mouseMoveEvent(self, e):
         if self._drag: self.move(self.mapToParent(e.pos()) - self._off)
