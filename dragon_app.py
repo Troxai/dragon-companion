@@ -101,6 +101,18 @@ def save_custom_responses(r):
     with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
         json.dump(r, f, ensure_ascii=False, indent=2)
 CUSTOM_RESPONSES = load_custom_responses()
+
+# --- LLM Config ---
+LLM_CONFIG_PATH = os.path.join(APP_DIR, "llm_config.json")
+def load_llm_config():
+    try:
+        with open(LLM_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except: return {"provider":"ollama","model":"qwen3:4b","api_key":""}
+def save_llm_config(cfg):
+    with open(LLM_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+LLM_CONFIG = load_llm_config()
 def play_sound(name):
     try:
         if name == "feed": winsound.Beep(600, 100)
@@ -166,17 +178,43 @@ def get_active_window():
 
 class LLM:
     def __init__(self):
-        self.url = "http://localhost:11434/api/chat"
-        self.model = "qwen3:4b"
+        cfg = LLM_CONFIG
+        self.provider = cfg.get("provider", "ollama")
+        self.url = cfg.get("url", "http://localhost:11434/api/chat")
+        self.model = cfg.get("model", "qwen3:4b")
+        self.api_key = cfg.get("api_key", "")
+
     def ask(self, system_prompt, msg, callback):
+        if self.provider == "gemini":
+            self._ask_gemini(system_prompt, msg, callback)
+        elif self.provider == "ollama":
+            self._ask_ollama(system_prompt, msg, callback)
+        else:
+            callback(None)
+
+    def _ask_ollama(self, sys_pmt, msg, cb):
         def go():
             try:
-                data = json.dumps({"model":self.model,"messages":[{"role":"system","content":system_prompt},{"role":"user","content":msg}],"stream":False,"options":{"temperature":0.8,"num_predict":60}}).encode()
+                data = json.dumps({"model":self.model,"messages":[{"role":"system","content":sys_pmt},{"role":"user","content":msg}],"stream":False,"options":{"temperature":0.8,"num_predict":60}}).encode()
                 req = urllib.request.Request(self.url, data=data, headers={"Content-Type":"application/json"})
                 with urllib.request.urlopen(req, timeout=8) as r:
                     text = json.loads(r.read())["message"]["content"].strip()
-                    callback(text[:200] if text else None)
-            except: callback(None)
+                    cb(text[:250] if text else None)
+            except: cb(None)
+        threading.Thread(target=go, daemon=True).start()
+
+    def _ask_gemini(self, sys_pmt, msg, cb):
+        def go():
+            try:
+                full_prompt = f"{sys_pmt}\n\nUser: {msg}"
+                data = json.dumps({"contents":[{"parts":[{"text":full_prompt}]}]}).encode()
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+                req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    resp = json.loads(r.read())
+                    text = resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    cb(text[:250] if text else None)
+            except: cb(None)
         threading.Thread(target=go, daemon=True).start()
 
 class Dragon:
@@ -608,6 +646,20 @@ class Pet(QWidget):
                 self.dragon.speak(f"Em biết {len(CUSTOM_RESPONSES)} câu: {', '.join(keys)}")
             else:
                 self.dragon.speak("Em chưa được dạy gì! Dùng /teach <keyword> | <response> nha!")
+        elif tl.startswith("/llm "):
+            parts = t[5:].strip().split()
+            if len(parts) >= 1:
+                LLM_CONFIG["provider"] = parts[0]
+                if len(parts) >= 2: LLM_CONFIG["model"] = parts[1]
+                if len(parts) >= 3: LLM_CONFIG["api_key"] = parts[2]
+                save_llm_config(LLM_CONFIG)
+                self.llm.provider = LLM_CONFIG["provider"]
+                self.llm.model = LLM_CONFIG["model"]
+                self.llm.api_key = LLM_CONFIG.get("api_key", "")
+                self.dragon.add_sparkles(8)
+                self.dragon.speak(f"Đã chuyển sang {LLM_CONFIG['provider']} - {LLM_CONFIG['model']}!")
+            else:
+                self.dragon.speak("Dùng: /llm <gemini|ollama> <model> <api_key>")
         elif any(w in tl for w in ["hello","chào","hi"]):
             self.dragon.speak("Chào anh! Hôm nay anh muốn làm gì nào?")
             self.dragon.add_sparkles(5); add_xp(1)
