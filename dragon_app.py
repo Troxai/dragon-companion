@@ -108,6 +108,25 @@ def play_sound(name):
         elif name == "achievement": winsound.Beep(1200, 150)
     except: pass
 
+def speak_tts(text):
+    try:
+        import pythoncom; pythoncom.CoInitialize()
+        import win32com.client
+        tts = win32com.client.Dispatch("SAPI.SpVoice")
+        voices = tts.GetVoices()
+        for i in range(voices.Count):
+            v = voices.Item(i)
+            desc = v.GetDescription()
+            if "Vietnamese" in desc or "linh" in desc.lower() or "VN" in desc:
+                tts.Voice = v
+                break
+        tts.Rate = 0
+        tts.Speak(text, 1)
+    except: pass
+
+def speak_tts_async(text):
+    threading.Thread(target=speak_tts, args=(text,), daemon=True).start()
+
 
 def unlock_ach(ach_id):
     if db.execute("SELECT id FROM achievements WHERE id=?", (ach_id,)).fetchone(): return
@@ -763,6 +782,17 @@ class Pet(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         d = get_dragon()
+        if d["stage"] != self._stage:
+            old = self._stage
+            self._stage = d["stage"]
+            pw = STAGE_W.get(self._stage, 80)
+            self.resize(max(pw + 60, 280), pw + 110)
+            self.dragon.evo_flash = 60
+            play_sound("evo")
+            self._try_unlock("first_evo")
+            if self._stage == "legendary": self._try_unlock("legend")
+            if d["level"] >= 5: self._try_unlock("level_5")
+            if d["level"] >= 10: self._try_unlock("level_10")
         self.dragon.draw(p, self.width(), self.height(), self._stage, d["mood"], d["hp"], d.get("name", ""))
         p.end()
 
