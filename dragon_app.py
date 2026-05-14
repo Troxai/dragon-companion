@@ -27,7 +27,7 @@ db.execute("INSERT OR IGNORE INTO dragon(id,stage,xp,level,mood,hp,element,name)
 db.commit()
 
 STAGES = ["egg","hatchling","juvenile","adult","ancient","legendary"]
-STAGE_XP = {"egg":0,"hatchling":100,"juvenile":350,"adult":800,"ancient":1800,"legendary":4000}
+STAGE_XP = {"egg":0,"hatchling":50,"juvenile":150,"adult":300,"ancient":600,"legendary":1200}
 STAGE_W = {"egg":80,"hatchling":100,"juvenile":140,"adult":180,"ancient":220,"legendary":260}
 STAGE_NAMES = {"egg":"Trứng","hatchling":"Rồng con","juvenile":"Rồng vị thành niên","adult":"Rồng trưởng thành","ancient":"Rồng cổ đại","legendary":"Rồng huyền thoại"}
 STAGE_FILES = {"egg":"trung.png","hatchling":"Rồng-con.png","juvenile":"Rồng-vị-thành-niên.png","adult":"Rồng-trưởng-thành.png","ancient":"Rồng-cổ-đại.png","legendary":"rồng-huyền-thoại.png"}
