@@ -1,4 +1,4 @@
-import sys, math, random, ctypes, sqlite3, os, json, threading, urllib.request, time, winsound
+import sys, math, random, ctypes, sqlite3, os, json, threading, urllib.request, time
 from ctypes import wintypes
 from datetime import datetime, date
 from PyQt6.QtWidgets import QApplication, QWidget, QLineEdit, QSystemTrayIcon, QMenu
@@ -115,6 +115,7 @@ def save_llm_config(cfg):
 LLM_CONFIG = load_llm_config()
 def play_sound(name):
     try:
+        import winsound
         if name == "feed": winsound.Beep(600, 100)
         elif name == "evo": winsound.Beep(1000, 200)
         elif name == "achievement": winsound.Beep(1200, 150)
@@ -137,7 +138,8 @@ def speak_tts(text):
     except: pass
 
 def speak_tts_async(text):
-    threading.Thread(target=speak_tts, args=(text,), daemon=True).start()
+    pass  # Disabled - enable by removing 'pass' and uncommenting below
+    # threading.Thread(target=speak_tts, args=(text,), daemon=True).start()
 
 
 def unlock_ach(ach_id):
